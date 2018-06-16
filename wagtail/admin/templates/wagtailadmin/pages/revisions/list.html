@@ -19,10 +19,23 @@
                             <span class="unbold">
                                 {% trans 'by' context 'points to a user who created a revision' %}<span class="avatar small"><img src="{% avatar_url revision.user size=25 %}" /></span>{{ revision.user }}
                             </span>
+
                             {% if revision == page.get_latest_revision %}({% trans 'Current draft' %}){% endif %}
                             {% if revision == page.live_revision %}({% trans 'Live version' %}){% endif %}
+
 			    {% if revision.approved_go_live_at %}({% trans 'Scheduled for' %} {{ revision.approved_go_live_at }}) {% endif %}
                         </h2>
+
+                        {% if revision.changed_fields %}
+                            <h2>
+                                {% trans 'Changed fields' %}:
+                                    <span class="unbold">
+                                        {% for changed_field in revision.changed_fields %}
+                                            {{ changed_field.label }}{% if not forloop.last %}, {% endif %}
+                                        {% endfor %}
+                                    </span>
+                            </h2>
+                        {% endif %}
 
                         <ul class="actions">
                             <li><a href="{% url 'wagtailadmin_pages:revisions_view' page.id revision.id %}" class="button button-small button-secondary" target="_blank">{% trans 'Preview' %}</a></li>

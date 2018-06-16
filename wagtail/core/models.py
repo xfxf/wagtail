@@ -628,7 +628,36 @@ class Page(AbstractPage, index.Indexed, ClusterableModel, metaclass=PageBase):
         return self.draft_title or self.title
 
     def save_revision(self, user=None, submitted_for_moderation=False, approved_go_live_at=None, changed=True):
+        """
+        Saves a revision, and a revision event.
+        Only creates a new revision if content has changed; otherwise only creates a revision event.
+        """
         self.full_clean()
+
+        from wagtail.core.fields import StreamField
+
+        # Determine whether any content has changed since the last revision
+        changed_fields = []
+
+        last_revision = self.get_latest_revision()
+        if last_revision:
+            comparison = self.specific.get_edit_handler().get_comparison()
+            comparison = [comp(self, last_revision.as_page_object()) for comp in comparison]
+            comparison = [comp for comp in comparison if comp.has_changed()]
+
+            for comp in comparison:
+
+                if type(comp.field) is StreamField:
+                    # FIXME: ensure we deal with StreamField's explicitly
+                    continue
+
+                changed_fields.append({
+                    'name': comp.field.name,
+                    'label': comp.field_label().__str__(),
+                    # add type
+                })
+
+        print(changed_fields)
 
         # Create revision
         revision = self.revisions.create(
@@ -636,6 +665,7 @@ class Page(AbstractPage, index.Indexed, ClusterableModel, metaclass=PageBase):
             user=user,
             submitted_for_moderation=submitted_for_moderation,
             approved_go_live_at=approved_go_live_at,
+            changed_fields=changed_fields,
         )
 
         update_fields = []
@@ -1404,13 +1434,75 @@ class SubmittedRevisionsManager(models.Manager):
         return super().get_queryset().filter(submitted_for_moderation=True)
 
 
+class PageRevisionEvent(models.Model):
+    """
+    Page Revision Events track non-content changes to a Revision.
+    The events are designed to be extended; extra events (i.e. comments on a revision) can be registered.
+    """
+    revision = models.ForeignKey('PageRevision',
+                                 verbose_name=_('page revision'),
+                                 related_name='revision_events',
+                                 on_delete=models.CASCADE)
+
+    # Should be extendable; a developer or external libraries should be able to 'register' an event identifier
+    EVENT_IDENTIFIER_CHOICES = [
+        ('SUBMITTED_FOR_MODERATION', 'Submitted for moderation'),
+        ('PUBLISH', 'Published'),
+        ('UNPUBLISH', 'Unpublished'),
+        ('MODERATION_APPROVED', 'Moderation approved'),
+        ('MODERATION_REJECTED', 'Moderation rejected'),
+    ]
+
+    event = models.CharField(
+        max_length=40,
+        choices=EVENT_IDENTIFIER_CHOICES,
+        null=True,
+    )
+
+    event_json = models.TextField(verbose_name=_('event JSON, contains optional metadata about event'), null=True)
+
+    created_at = models.DateTimeField(db_index=True, verbose_name=_('created at'))
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, verbose_name=_('user'), null=True, blank=True,
+        on_delete=models.SET_NULL
+    )
+
+
 class PageRevision(models.Model):
+    """
+    Page Revisions contain content changes to a Page.  Non-content changes should live as a PageRevisionEvent.
+
+    FIXME:
+     * migration for existing state on revision
+    """
+
     page = models.ForeignKey('Page', verbose_name=_('page'), related_name='revisions', on_delete=models.CASCADE)
+
+    def add_event(self, identifier, user, json=None):
+        PageRevision.objects.add(revision_pk=self.pk, event=identifier, event_json=json, user=user)
+
+    # remove below, add wrapper function
     submitted_for_moderation = models.BooleanField(
         verbose_name=_('submitted for moderation'),
         default=False,
         db_index=True
     )
+
+    _changed_fields = models.TextField(verbose_name=_('changed fields JSON'), null=True, blank=True)
+
+    @property
+    def changed_fields(self):
+        try:
+            return json.loads(self._changed_fields)
+        except ValueError:
+            return None
+
+    @changed_fields.setter
+    def changed_fields(self, fields):
+        print(fields)
+        self._changed_fields = json.dumps(fields)
+
     created_at = models.DateTimeField(db_index=True, verbose_name=_('created at'))
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, verbose_name=_('user'), null=True, blank=True,
