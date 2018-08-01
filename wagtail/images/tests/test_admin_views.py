@@ -1,5 +1,4 @@
 import json
-import re
 
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
@@ -539,8 +538,9 @@ class TestImageChooserView(TestCase, WagtailTestUtils):
     def test_simple(self):
         response = self.get()
         self.assertEqual(response.status_code, 200)
+        response_json = json.loads(response.content.decode())
+        self.assertEqual(response_json['step'], 'chooser')
         self.assertTemplateUsed(response, 'wagtailimages/chooser/chooser.html')
-        self.assertTemplateUsed(response, 'wagtailimages/chooser/chooser.js')
 
     def test_search(self):
         response = self.get({'q': "Hello"})
@@ -630,7 +630,9 @@ class TestImageChooserChosenView(TestCase, WagtailTestUtils):
     def test_simple(self):
         response = self.get()
         self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, 'wagtailimages/chooser/image_chosen.js')
+
+        response_json = json.loads(response.content.decode())
+        self.assertEqual(response_json['step'], 'image_chosen')
 
 
 class TestImageChooserSelectFormatView(TestCase, WagtailTestUtils):
@@ -652,8 +654,9 @@ class TestImageChooserSelectFormatView(TestCase, WagtailTestUtils):
     def test_simple(self):
         response = self.get()
         self.assertEqual(response.status_code, 200)
+        response_json = json.loads(response.content.decode())
+        self.assertEqual(response_json['step'], 'select_format')
         self.assertTemplateUsed(response, 'wagtailimages/chooser/select_format.html')
-        self.assertTemplateUsed(response, 'wagtailimages/chooser/select_format.js')
 
     def test_with_edit_params(self):
         response = self.get(params={'alt_text': "some previous alt text"})
@@ -664,18 +667,17 @@ class TestImageChooserSelectFormatView(TestCase, WagtailTestUtils):
         response = self.post({'format': 'left', 'alt_text': 'Arthur "two sheds" Jackson'})
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response['Content-Type'], 'text/javascript')
+        self.assertEqual(response['Content-Type'], 'application/json')
 
-        # extract data as json from the code line: modal.respond('imageChosen', {json});
-        match = re.search(r'modal.respond\(\'imageChosen\', ([^\)]+)\);', response.content.decode())
-        self.assertTrue(match)
-        response_json = json.loads(match.group(1))
+        response_json = json.loads(response.content.decode())
+        self.assertEqual(response_json['step'], 'image_chosen')
+        result = response_json['result']
 
-        self.assertEqual(response_json['id'], self.image.id)
-        self.assertEqual(response_json['title'], "Test image")
-        self.assertEqual(response_json['format'], 'left')
-        self.assertEqual(response_json['alt'], 'Arthur "two sheds" Jackson')
-        self.assertIn('alt="Arthur &quot;two sheds&quot; Jackson"', response_json['html'])
+        self.assertEqual(result['id'], self.image.id)
+        self.assertEqual(result['title'], "Test image")
+        self.assertEqual(result['format'], 'left')
+        self.assertEqual(result['alt'], 'Arthur "two sheds" Jackson')
+        self.assertIn('alt="Arthur &quot;two sheds&quot; Jackson"', result['html'])
 
 
 class TestImageChooserUploadView(TestCase, WagtailTestUtils):
@@ -689,7 +691,8 @@ class TestImageChooserUploadView(TestCase, WagtailTestUtils):
         response = self.get()
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, 'wagtailimages/chooser/chooser.html')
-        self.assertTemplateUsed(response, 'wagtailimages/chooser/chooser.js')
+        response_json = json.loads(response.content.decode())
+        self.assertEqual(response_json['step'], 'chooser')
 
     def test_upload(self):
         response = self.client.post(reverse('wagtailimages:chooser_upload'), {
@@ -742,6 +745,22 @@ class TestImageChooserUploadView(TestCase, WagtailTestUtils):
         # The re-rendered image chooser listing should be paginated
         self.assertContains(response, "Page 1 of ")
         self.assertEqual(12, len(response.context['images']))
+
+    def test_select_format_flag_after_upload_form_error(self):
+        submit_url = reverse('wagtailimages:chooser_upload') + '?select_format=true'
+        response = self.client.post(submit_url, {
+            'title': "Test image",
+            'file': SimpleUploadedFile('not_an_image.txt', b'this is not an image'),
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'wagtailimages/chooser/chooser.html')
+        self.assertFormError(response, 'uploadform', 'file', "Not a supported image format. Supported formats: GIF, JPEG, PNG.")
+
+        # the action URL of the re-rendered form should include the select_format=true parameter
+        # (NB the HTML in the response is embedded in a JS string, so need to escape accordingly)
+        expected_action_attr = 'action=\\"%s\\"' % submit_url
+        self.assertContains(response, expected_action_attr)
 
     @override_settings(DEFAULT_FILE_STORAGE='wagtail.tests.dummy_external_storage.DummyExternalStorage')
     def test_upload_with_external_storage(self):
